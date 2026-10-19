@@ -113,6 +113,11 @@ test('real scip-typescript indexes cross-file imports', async t => {
   assert.equal(report.state, 'indexed', JSON.stringify(report.runs));
   assert.equal(report.indexedFiles, 3);
   assert.equal(verifyIR(report.ir.directory).counts.documents, 3);
+  const calls = fs.readFileSync(path.join(report.ir.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const call = calls.find(c => c.callee_name === 'run');
+  assert.equal(call.resolution_status, 'resolved-static');
+  const definitions = fs.readFileSync(path.join(report.ir.directory, 'structures.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(definitions.some(s => s.kind === 'function' && s.name === 'run' && s.symbol_id === call.target_symbol_id));
   const db = openStore(path.join(report.runDir, 'model.sqlite'));
   try {
     const symbol = db.prepare('SELECT symbol id FROM occurrences GROUP BY symbol HAVING sum(roles & 1)>0 AND count(DISTINCT path)>1').get();
@@ -174,7 +179,9 @@ test('persisted IR retains producer ranges, relationships, diagnostics and exter
   assert.equal(rows('occurrences')[1].symbol_id, null);
   assert.equal(rows('relationships')[0].raw.isImplementation, true);
   assert.equal(rows('diagnostics').length, 2);
-  assert.equal(rows('external-symbols')[0].id, 'external#');
+  assert.equal(rows('external-symbols')[0].producer_symbol, 'external#');
+  assert.equal(rows('symbols').find(s => s.producer_symbol === symbol).resolution_status, 'defined');
+  assert.equal(rows('relationships')[0].target_symbol_id, rows('external-symbols')[0].symbol_id);
 });
 
 test('IR verifies in a new process without the original repository and detects damaged source blobs', async t => {

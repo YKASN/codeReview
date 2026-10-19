@@ -42,7 +42,7 @@ export function rangeOf(o) {
   return full;
 }
 
-export function importScip(db, filename, repositoryRoot, indexer) {
+export function importScip(db, filename, repositoryRoot, indexer, selectedFiles = null) {
   const data = Index.decode(fs.readFileSync(filename));
   if (!data.metadata?.projectRoot) throw new Error('SCIP project root is required');
   const indexRoot = fs.realpathSync(fileURLToPath(data.metadata.projectRoot));
@@ -65,7 +65,7 @@ export function importScip(db, filename, repositoryRoot, indexer) {
       if (relativePath !== doc.relativePath) stats.normalizedWindowsPaths++;
       inside(indexRoot, relativePath);
       const p = path.relative(repositoryRoot, path.join(indexRoot, relativePath)).split(path.sep).join('/');
-      if (!file.get(p)) { stats.skippedDocuments++; continue; }
+      if (!file.get(p) || selectedFiles && !selectedFiles.has(p)) { stats.skippedDocuments++; continue; }
       docInsert.run(indexer, p, doc.positionEncoding || 0);
       stats.documents++;
       stats.positionEncodings[doc.positionEncoding || 0] = (stats.positionEncodings[doc.positionEncoding || 0] || 0) + 1;

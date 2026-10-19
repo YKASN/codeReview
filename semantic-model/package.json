@@ -1,6 +1,6 @@
 {
   "name": "repository-semantic-model",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,8 +11,10 @@
     "model": "node src/cli.js"
   },
   "dependencies": {
+    "@iarna/toml": "2.2.5",
     "@sourcegraph/scip-python": "0.6.6",
     "@sourcegraph/scip-typescript": "0.4.0",
-    "protobufjs": "7.6.6"
+    "protobufjs": "7.6.6",
+    "typescript": "5.9.3"
   }
 }
