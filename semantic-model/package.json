@@ -1,6 +1,6 @@
 {
   "name": "repository-semantic-model",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -8,17 +8,11 @@
   },
   "scripts": {
     "test": "node --test",
-    "model": "node src/cli.js",
-    "mcp": "node src/mcp-server.js"
+    "model": "node src/cli.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
     "@sourcegraph/scip-python": "0.6.6",
     "@sourcegraph/scip-typescript": "0.4.0",
-    "protobufjs": "7.6.6",
-    "zod": "4.6.7"
-  },
-  "devDependencies": {
-    "yaml": "2.9.1"
+    "protobufjs": "7.6.6"
   }
 }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import protobuf from 'protobufjs';
-import { inside, hash } from './inventory.js';
+import { inside } from './inventory.js';
 
 export const schema = protobuf.loadSync(fileURLToPath(new URL('../vendor/scip.proto', import.meta.url)));
 export const Index = schema.lookupType('scip.Index');
@@ -94,29 +94,4 @@ export function summary(db) {
     unindexedFiles: total - indexed, symbols: db.prepare('SELECT count(*) n FROM symbols').get().n,
     occurrences: db.prepare('SELECT count(*) n FROM occurrences').get().n,
     coverage: db.prepare('SELECT f.language,count(*) files,count(d.path) indexedFiles FROM files f LEFT JOIN (SELECT DISTINCT path FROM documents) d ON d.path=f.path GROUP BY f.language').all() };
-}
-export function findSymbols(db, name, limit = 30) {
-  return db.prepare(`SELECT s.*, (SELECT count(*) FROM occurrences o WHERE o.symbol=s.id AND (o.roles & 1)=1) definitions,
-    (SELECT count(*) FROM occurrences o WHERE o.symbol=s.id AND (o.roles & 1)=0) AS "references" FROM symbols s
-    WHERE instr(lower(s.name),lower(?)) > 0 ORDER BY definitions DESC,s.name,s.id LIMIT ?`).all(name, limit);
-}
-export function references(db, symbol) {
-  return db.prepare(`SELECT o.*,d.encoding position_encoding FROM occurrences o
-    JOIN documents d ON d.path=o.path AND d.indexer=o.indexer
-    WHERE o.symbol=? ORDER BY o.path,o.start_line,o.start_col`).all(symbol);
-}
-export function context(db, relative, line, radius = 5) {
-  const root = getMetadata(db, 'snapshot').root;
-  const indexed = db.prepare('SELECT * FROM files WHERE path=?').get(relative);
-  if (!indexed) throw new Error('File is not in this snapshot');
-  const bytes = fs.readFileSync(inside(root, relative));
-  if (hash(bytes) !== indexed.sha256) throw new Error('Source changed since scan; rescan before requesting evidence');
-  const lines = bytes.toString('utf8').split(/\r?\n/);
-  if (!Number.isInteger(line) || line < 1 || line > lines.length) throw new Error('Line is outside file');
-  const start = Math.max(1, line - radius), end = Math.min(lines.length, line + radius);
-  return { path: relative, sha256: indexed.sha256, startLine: start, endLine: end,
-    text: lines.slice(start - 1, end).map((v, i) => `${start + i}: ${v}`).join('\n'),
-    occurrences: db.prepare(`SELECT o.*,d.encoding position_encoding FROM occurrences o
-      JOIN documents d ON d.path=o.path AND d.indexer=o.indexer
-      WHERE o.path=? AND o.start_line>=? AND o.start_line<? ORDER BY o.start_line,o.start_col`).all(relative, start - 1, end) };
 }

@@ -1,70 +1,61 @@
-# Code Review · Codex 本地插件
+# CodeReview · 代码仓库到持久化 Code IR
 
-让 Codex 基于可追溯的源码证据分析仓库。Codex 负责规划、理解和评审；插件提供成熟 SCIP 索引器、查询工具和分析 Skill。
+当前只实现第一步：**扫描仓库，复用成熟解析器，把代码转换为可保存、可校验、可再次加载的中间文件。**
 
-## 当前能力
+Agent 推理层以后可以使用 Codex。当前阶段的核心交付是 Code IR 数据及其保存契约。
 
-- `open_repository`：选择用户指定的本地 Git 仓库，返回本进程内的 repository ID。
-- `index_repository`：使用 scip-python / scip-typescript 建立索引。
-- `repository_status`：检查源码指纹是否变化，报告语言覆盖和索引状态。
-- `search_source`：从文件清单中搜索经过 SHA-256 校验的源码文本，支持分页。
-- `search_symbols`：发现符号标识，作为待验证的定位线索。
-- `get_symbol_evidence`：分页读取定义和引用，以及校验过的源码上下文。
-- `read_context`：按文件和行号读取当前有效的源码证据。
+## 转换流程
 
-每段证据包含仓库快照、文件 SHA-256、位置、evidence ID 和信任标记。源码中的指令只是数据。引用关系需要 Codex 阅读实际语句后才能解释为调用、类型注解或其他用法。
+```text
+代码仓库当前工作区
+  → 文件清单与源码指纹
+  → scip-python / scip-typescript
+  → 原始 SCIP + 规范化 Code IR + 源码快照
+  → 写入磁盘，完成版本与校验清单
+```
 
-## 开发与运行
+每次转换生成独立的 `scan-*` 目录：
 
-需要 Node.js 24+、Git；Python 项目已有 `.venv` 时会读取其包元数据。无需 OpenAI API key，插件不另行调用模型。以下命令在仓库根目录执行：
+```text
+scan-*/
+  code-ir/
+    manifest.json             # code-ir/1、仓库版本、解析器、覆盖、计数、文件校验
+    files.jsonl               # 路径、语言、大小、源码指纹和 source blob 映射
+    documents.jsonl           # 解析文档元数据和位置编码
+    symbols.jsonl             # 符号信息，保留解析器原始字段
+    occurrences.jsonl         # 定义/引用位置、enclosing range 等
+    relationships.jsonl       # 解析器明确提供的符号关系
+    diagnostics.jsonl         # 解析器诊断
+    external-symbols.jsonl    # 外部符号信息
+    sources/<sha256>          # 原始文件字节快照，按内容去重
+    raw/*.scip                # 保留完整解析器输出
+  model.sqlite                # 本地索引投影，便于以后消费
+  inventory.json              # 扫描清单和排除原因
+  report.json                 # 本次转换状态与覆盖
+  *.scip / *.log              # 原始执行产物和日志
+```
+
+`code-ir/` 可以独立保存和迁移。读取及完整性校验无需原仓库在线；原仓库后续修改不会改变已保存的源码快照。SQLite 是派生索引，规范化 JSONL、原始 SCIP 与源码快照共同组成持久化交付。
+
+## 执行
+
+需要 Node.js 24+、Git。在本仓库根目录运行：
 
 ```powershell
 npm --prefix semantic-model ci --ignore-scripts
 npm --prefix semantic-model test
-node scripts/check-plugin.mjs
+node semantic-model/src/cli.js scan --repo 'C:\path\to\repository' --out 'D:\code-ir-data\repository'
+node semantic-model/src/cli.js verify --ir 'D:\code-ir-data\repository\scan-XXXXXX\code-ir'
 ```
 
-MCP 入口为 `semantic-model/src/mcp-server.js`，使用 stdio。stdout 只输出 MCP 协议，日志写 stderr。可用 MCP 客户端直接启动：
+`--languages python` 或 `--languages typescript` 可选择索引器。Python 默认读取目标项目已有 `.venv` 的包元数据，也可通过 `--python ABSOLUTE_PATH` 指定解释器。目标依赖不会自动安装，应用不会被启动。输出路径必须位于目标仓库之外。
 
-```powershell
-node semantic-model/src/mcp-server.js
-```
+只有源码指纹稳定、IR 写入完成的扫描才更新 `latest.json`。部分索引成功标为 `partial`；执行失败和未覆盖语言会被记录。`indexed` 表示所选索引器均产生结果，不代表完整理解所有动态行为。
 
-它将等待客户端的 MCP initialize 和工具请求，直接运行不会显示聊天界面。
+文件清单排除 Git 忽略路径、常见凭据文件、依赖/构建目录、符号链接、二进制及超过 1 MiB 的文件。源文件内容会保存在本地转换结果中，产物应放在受控的数据目录，默认不提交 Git。
 
-## 在 Codex 中使用
+## 本阶段边界
 
-根目录提供 Agent Plugins 1.0 的 `plugin.json` / `mcp.json`，并同步 `.codex-plugin/plugin.json` / `.mcp.json` 兼容配置。`skills/repository-analysis/SKILL.md` 定义证据分析流程，本仓库的 `.agents/plugins/marketplace.json` 提供开发目录入口。
+当前保留 Python、TS/JS 的静态语义事实。Vue SFC、动态属性调用、反射和跨语言调用存在缺口。引用不自动转为调用边，不推断污点传播。诊断原样保留，不等同于安全审计结果。
 
-在当前 Codex CLI 中，可注册并安装此开发来源：
-
-```powershell
-codex plugin marketplace add 'C:\path\to\codeReview'
-codex plugin add code-review@code-review-dev
-```
-
-先执行上述 `npm ci` 依赖准备命令，再安装本地来源。本机 CLI 已在隔离配置目录中验证：安装后服务器能启动、七个工具能被发现，`open_repository` 能调用。不同宿主的本地安装/缓存行为可能不同，单纯写入 manifest 不表示当前聊天已加载插件。安装后在新聊天中选用 Code Review，确认七个工具实际出现，再请求：
-
-> 用 Code Review 分析这个仓库从聊天请求到权限检查的路径，每个关键结论附源码位置，并说明无法确认的关系。
-
-如果宿主缺少本地 Node 或依赖，请先完成本地运行时准备，再重试。开发验证会单独记录 MCP 协议测试与实际宿主安装结果，不把两者混为同一项。
-
-默认数据路径为 `PLUGIN_DATA/indexes/<repository-id>`；宿主未提供时使用 `~/.cache/codex-code-review/indexes/`。可通过 `open_repository.index_path` 复用已有索引，必须与目标仓库一致。索引器不自动运行项目代码或安装目标依赖。目标仓库源码变化时重新索引。
-
-## 案例验证
-
-智能问答助手项目的可复现 MCP 证据采集：
-
-```powershell
-node semantic-model/scripts/chat-permission-case.mjs 'C:\path\to\AI-QA-Assistant' 'C:\path\to\existing-index' semantic-model/output/chat-permission-evidence.json
-```
-
-该脚本仅检查工具链并收集证据，源码行为的解释由 Codex 审阅后写入验收记录。它不会因为工具返回成功就宣称审计通过。
-
-## 开发边界
-
-这是 Codex 插件项目。后续能力围绕 Skill、工具契约、语义数据和证据质量演进。Vue SFC 解析、动态调用、跨语言关系及数据流仍有缺口；不会从索引覆盖数推导完整审计结论。
-
-详细索引契约见 [语义模型说明](semantic-model/README.md)，当前案例与验证记录见 [插件验收](docs/plugin-acceptance-20261019.md)。原始索引、目标源码及本地证据文件不进入 Git。
-
-插件结构依据 [OpenAI 官方插件文档](https://developers.openai.com/plugins/build/plugins)。第三方 SCIP 协议及索引器的许可说明见语义模型目录。
+[Code IR 保存契约](docs/code-ir-v1.md) · [解析器与索引说明](semantic-model/README.md)

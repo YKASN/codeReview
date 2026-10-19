@@ -6,8 +6,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { inventory, inside } from '../src/inventory.js';
-import { Index, openStore, addInventory, importScip, references, context, findSymbols, rangeOf } from '../src/store.js';
+import { Index, openStore, addInventory, importScip, rangeOf } from '../src/store.js';
 import { scan } from '../src/scan.js';
+import { persistIR, finalizeIR, verifyIR } from '../src/ir.js';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'semantic-fixture-'));
@@ -35,15 +36,12 @@ test('SCIP links cross-file references, scopes locals, and retains late symbol d
   ]);
   const stats = importScip(db, f, root, 'python');
   assert.equal(stats.documents, 2);
-  assert.equal(references(db, symbol).length, 2);
-  assert.equal(findSymbols(db, 'local 0').length, 2);
-  const result = findSymbols(db, 'run').find(s => s.id === symbol);
+  assert.equal(db.prepare('SELECT count(*) n FROM occurrences WHERE symbol=?').get(symbol).n, 2);
+  assert.equal(db.prepare("SELECT count(*) n FROM symbols WHERE raw='local 0'").get().n, 2);
+  const result = db.prepare('SELECT * FROM symbols WHERE id=?').get(symbol);
   assert.equal(result.name, 'run');
   assert.deepEqual(JSON.parse(result.documentation), ['Runs a task.']);
-  assert.equal(result.definitions, 1); assert.equal(result.references, 1);
-  assert.match(context(db, 'b.py', 1).text, /def run/);
-  fs.appendFileSync(path.join(root, 'b.py'), '# changed\n');
-  assert.throws(() => context(db, 'b.py', 1), /Source changed/);
+
 });
 
 test('Windows indexer paths normalize without permitting traversal', t => {
@@ -93,11 +91,12 @@ test('real scip-python indexes a two-file repository on this platform', async t 
   const report = await scan(root, output, { languages: ['python'], timeoutMs: 60000 });
   assert.equal(report.state, 'indexed', JSON.stringify(report.runs));
   assert.equal(report.indexedFiles, 2);
+  assert.equal(verifyIR(report.ir.directory).valid, true);
   const db = openStore(path.join(report.runDir, 'model.sqlite'));
   try {
-    const symbol = findSymbols(db, 'run').find(s => s.definitions && s.references);
+    const symbol = db.prepare('SELECT symbol id FROM occurrences GROUP BY symbol HAVING sum(roles & 1)>0 AND count(DISTINCT path)>1').get();
     assert.ok(symbol, 'A resolved symbol must have a definition and a cross-file reference');
-    assert.equal(new Set(references(db, symbol.id).map(r => r.path)).size, 2);
+    assert.equal(db.prepare('SELECT count(DISTINCT path) n FROM occurrences WHERE symbol=?').get(symbol.id).n, 2);
   } finally { db.close(); }
 });
 
@@ -113,11 +112,12 @@ test('real scip-typescript indexes cross-file imports', async t => {
   const report = await scan(root, output, { languages: ['typescript'], timeoutMs: 60000 });
   assert.equal(report.state, 'indexed', JSON.stringify(report.runs));
   assert.equal(report.indexedFiles, 3);
+  assert.equal(verifyIR(report.ir.directory).counts.documents, 3);
   const db = openStore(path.join(report.runDir, 'model.sqlite'));
   try {
-    const symbol = findSymbols(db, 'run').find(s => s.definitions && s.references);
+    const symbol = db.prepare('SELECT symbol id FROM occurrences GROUP BY symbol HAVING sum(roles & 1)>0 AND count(DISTINCT path)>1').get();
     assert.ok(symbol);
-    assert.equal(new Set(references(db, symbol.id).map(r => r.path)).size, 2);
+    assert.equal(db.prepare('SELECT count(DISTINCT path) n FROM occurrences WHERE symbol=?').get(symbol.id).n, 2);
   } finally { db.close(); }
 });
 
@@ -152,4 +152,43 @@ test('Python preparation failure is recorded and does not publish latest', async
   assert.equal(report.runs[0].status, 'failed');
   assert.match(report.runs[0].error, /interpreter does not exist/);
   assert.equal(fs.existsSync(path.join(output, 'latest.json')), false);
+});
+
+test('persisted IR retains producer ranges, relationships, diagnostics and external symbols', t => {
+  const root = fixture(t), output = fs.mkdtempSync(path.join(os.tmpdir(), 'ir-records-'));
+  t.after(() => fs.rmSync(output, { recursive: true, force: true }));
+  const source = inventory(root), symbol = 'scip-python python fixture 1 b/run().';
+  fs.writeFileSync(path.join(output, 'python.scip'), Index.encode(Index.fromObject({
+    metadata: { projectRoot: pathToFileURL(root).href },
+    documents: [{ relativePath: 'b.py', symbols: [{ symbol, relationships: [{ symbol: 'external#', isImplementation: true }] }],
+      occurrences: [{ symbol, range: [0, 4, 7], enclosingRange: [0, 0, 1, 12], symbolRoles: 1, diagnostics: [{ message: 'Example diagnostic', severity: 2 }] },
+        { range: [1, 0, 4], diagnostics: [{ message: 'Unresolved occurrence' }] }] }],
+    externalSymbols: [{ symbol: 'external#', documentation: ['External symbol docs'] }],
+  })).finish());
+  const ir = persistIR(output, source, [{ indexer: 'python', status: 'indexed' }]);
+  assert.throws(() => verifyIR(ir.directory), /not finalized/);
+  finalizeIR(ir.directory, 'indexed');
+  assert.equal(verifyIR(ir.directory).valid, true);
+  const rows = name => fs.readFileSync(path.join(ir.directory, name + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(rows('occurrences')[0].raw.enclosingRange, [0, 0, 1, 12]);
+  assert.equal(rows('occurrences')[1].symbol_id, null);
+  assert.equal(rows('relationships')[0].raw.isImplementation, true);
+  assert.equal(rows('diagnostics').length, 2);
+  assert.equal(rows('external-symbols')[0].id, 'external#');
+});
+
+test('IR verifies in a new process without the original repository and detects damaged source blobs', async t => {
+  const root = fixture(t), output = fs.mkdtempSync(path.join(os.tmpdir(), 'ir-offline-'));
+  t.after(() => fs.rmSync(output, { recursive: true, force: true }));
+  const report = await scan(root, output, { languages: ['python'], timeoutMs: 60000 });
+  assert.equal(report.state, 'indexed');
+  fs.renameSync(root, path.join(output, 'moved-original'));
+  const modulePath = new URL('../src/ir.js', import.meta.url).href;
+  const code = `import {verifyIR} from ${JSON.stringify(modulePath)}; console.log(JSON.stringify(verifyIR(process.argv[1])));`;
+  const result = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', code, report.ir.directory], { encoding: 'utf8' }));
+  assert.equal(result.valid, true);
+  const file = JSON.parse(fs.readFileSync(path.join(report.ir.directory, 'files.jsonl'), 'utf8').split('\n')[0]);
+  assert.match(fs.readFileSync(path.join(report.ir.directory, file.source), 'utf8'), /from b import run/);
+  fs.appendFileSync(path.join(report.ir.directory, file.source), '# corruption\n');
+  assert.throws(() => verifyIR(report.ir.directory), /checksum mismatch/);
 });

@@ -5,6 +5,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { inventory, hash } from './inventory.js';
 import { openStore, addInventory, importScip, setMetadata, summary } from './store.js';
+import { persistIR, finalizeIR } from './ir.js';
 
 const require = createRequire(import.meta.url);
 function run(args, cwd, log, env, timeoutMs) {
@@ -92,14 +93,22 @@ export async function scan(root, output, { languages = ['python', 'typescript'],
       runs.push(entry);
     }
     const after = inventory(root);
-    const stable = before.fingerprint === after.fingerprint;
-    const state = !stable ? 'source-changed' : runs.every(r => r.status === 'indexed') ? 'indexed' : 'partial';
+    let stable = before.fingerprint === after.fingerprint;
+    let ir, persistenceError;
+    if (stable && runs.some(r => r.status === 'indexed')) {
+      try { ir = persistIR(runDir, before, runs); }
+      catch (error) { persistenceError = error.message; }
+      stable = stable && inventory(root).fingerprint === before.fingerprint;
+    }
+    const state = !stable ? 'source-changed' : persistenceError ? 'persistence-failed' : runs.every(r => r.status === 'indexed') ? 'indexed' : 'partial';
+    if (ir) finalizeIR(ir.directory, state);
+    if (ir) setMetadata(db, 'code_ir', { schema_version: ir.schema_version, directory: 'code-ir' });
     setMetadata(db, 'runs', runs);
     setMetadata(db, 'state', state);
     const report = { schemaVersion: 1, state, createdAt: new Date().toISOString(), sourceStable: stable,
-      afterFingerprint: after.fingerprint, ...summary(db) };
+      afterFingerprint: after.fingerprint, ir, persistenceError, ...summary(db) };
     fs.writeFileSync(path.join(runDir, 'report.json'), JSON.stringify(report, null, 2));
-    if (stable && runs.some(r => r.status === 'indexed')) {
+    if (stable && ir && !persistenceError) {
       const temp = path.join(output, 'latest.json.tmp');
       fs.writeFileSync(temp, JSON.stringify({ runDir, state }, null, 2));
       fs.renameSync(temp, path.join(output, 'latest.json'));
