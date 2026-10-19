@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { inventory, inside } from '../src/inventory.js';
+import { inventory, inside, hash } from '../src/inventory.js';
 import { Index, openStore, addInventory, importScip, rangeOf } from '../src/store.js';
 import { scan } from '../src/scan.js';
 import { persistIR, finalizeIR, verifyIR } from '../src/ir.js';
@@ -92,6 +92,8 @@ test('real scip-python indexes a two-file repository on this platform', async t 
   assert.equal(report.state, 'indexed', JSON.stringify(report.runs));
   assert.equal(report.indexedFiles, 2);
   assert.equal(verifyIR(report.ir.directory).valid, true);
+  const fileReferences = fs.readFileSync(path.join(report.ir.directory, 'file-references.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(fileReferences.some(r => r.kind === 'symbol-reference' && r.evidence.length > 0 && r.source_file_id !== r.target_file_id));
   const db = openStore(path.join(report.runDir, 'model.sqlite'));
   try {
     const symbol = db.prepare('SELECT symbol id FROM occurrences GROUP BY symbol HAVING sum(roles & 1)>0 AND count(DISTINCT path)>1').get();
@@ -118,6 +120,17 @@ test('real scip-typescript indexes cross-file imports', async t => {
   assert.equal(call.resolution_status, 'resolved-static');
   const definitions = fs.readFileSync(path.join(report.ir.directory, 'structures.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   assert.ok(definitions.some(s => s.kind === 'function' && s.name === 'run' && s.symbol_id === call.target_symbol_id));
+  const relationPath = path.join(report.ir.directory, 'file-references.jsonl');
+  const relations = fs.readFileSync(relationPath, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(relations.some(r => r.symbol_ids.includes(call.target_symbol_id) && r.evidence.some(e => call.binding_occurrence_ids.includes(e.occurrence_id))));
+  const forged = structuredClone(relations);
+  forged[0].evidence[0].definition_ids = [call.binding_occurrence_ids[0]];
+  const bytes = Buffer.from(forged.map(r => JSON.stringify(r) + '\n').join(''));
+  fs.writeFileSync(relationPath, bytes);
+  const manifestPath = path.join(report.ir.directory, 'manifest.json'), manifest = JSON.parse(fs.readFileSync(manifestPath));
+  const artifact = manifest.artifacts.find(a => a.path === 'file-references.jsonl'); artifact.bytes = bytes.length; artifact.sha256 = hash(bytes);
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  assert.throws(() => verifyIR(report.ir.directory), /File reference evidence mismatch/);
   const db = openStore(path.join(report.runDir, 'model.sqlite'));
   try {
     const symbol = db.prepare('SELECT symbol id FROM occurrences GROUP BY symbol HAVING sum(roles & 1)>0 AND count(DISTINCT path)>1').get();

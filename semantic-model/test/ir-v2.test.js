@@ -81,6 +81,23 @@ test('IR consistency rejects dangling symbol references even when artifact hashe
   assert.throws(() => verifyIR(ir.directory), /Dangling symbols/);
 });
 
+test('derived file evidence cannot be forged even with matching artifact checksums', t => {
+  const { ir } = fixture(t);
+  mutate(ir.directory, 'file-references', values => { values.push({ id: 'file-reference:forged', source_file_id: 'file:missing', target_file_id: 'file:missing', evidence: [] }); });
+  assert.throws(() => verifyIR(ir.directory), /File reference projection count mismatch/);
+});
+
+test('derived overview cannot claim coverage absent from the underlying facts', t => {
+  const { ir } = fixture(t);
+  const filename = path.join(ir.directory, 'overview.json');
+  const overview = JSON.parse(fs.readFileSync(filename)); overview.reference_coverage.cross_file++;
+  const bytes = Buffer.from(JSON.stringify(overview)); fs.writeFileSync(filename, bytes);
+  const manifestPath = path.join(ir.directory, 'manifest.json'), manifest = JSON.parse(fs.readFileSync(manifestPath));
+  const artifact = manifest.artifacts.find(a => a.path === 'overview.json'); artifact.bytes = bytes.length; artifact.sha256 = hash(bytes);
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  assert.throws(() => verifyIR(ir.directory), /Derived overview mismatch/);
+});
+
 test('IR consistency checks source provenance and out-of-bounds line ranges', t => {
   const { ir } = fixture(t);
   mutate(ir.directory, 'occurrences', values => { values[1].range = [999, 0, 999, 1]; });

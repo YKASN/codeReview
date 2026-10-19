@@ -20,6 +20,7 @@
 | imports | id、file_id、source_sha256、parser、range、enclosing_structure_id、module、names（name/alias）、relative_level、resolution_status |
 | calls | id、file_id、source_sha256、parser、range、callee_range/name/expression、enclosing_structure_id、candidate_symbol_ids、binding_occurrence_ids、target_symbol_id、resolution_status、unresolved_reason |
 | syntax-diagnostics | id、file_id、source_sha256、parser、message，以及解析器提供的 code/line |
+| file-references | id、kind、source_project_id、source_file_id、target_file_id、target_project_ids、symbol_ids、evidence_count、evidence、resolution_status |
 
 “出处字段”是 project_id、producer_id、document_id、file_id、source_sha256。manifest 的 producers 保存解析器名称、版本、原始文件和执行配置；每条事实都能关联到它。
 
@@ -68,3 +69,15 @@ TypeScript 5.9.3 编译器 API 与 Python 标准库 AST 提取模块、类、函
 调用位置必须来自 AST；普通引用不升级为调用。调用名位置与 SCIP reference 精确匹配后，只对唯一、已定义的 Function/Method/Class/Constructor 保存静态目标和 occurrence 证据。`resolved-static` 表示静态声明关联，不能据此断言运行时调用链。其余保留 unresolved 与原因：动态调用表达式、候选不唯一、可调用定义未建立、无兼容绑定。生产者未声明列编码且定位前缀含非 ASCII 字符时，不冒险跨编码关联。
 
 当前未做跨语言/运行时分派、反射展开、数据流、增量合并；Vue SFC 保留源码。函数变量、部分赋值/解构、继承与重导出没有完整归一化；外部依赖仅基于已有环境。coverage 分别报告结构解析、静态绑定、未知字段和配置缺口，不能作为语义准确率。
+
+## 可重建的概览与文件关系
+
+`overview.json` 使用 `code-ir-overview/1`：保存各数据集计数、语言分布、各解析项目的配置依据、输入/已索引文件数、观察到的文档数、对外文件关系数和已有缺口。它不推断业务模块或职责。继续展开时，使用项目的 input_file_ids、文件的 document_ids，以及 structures 的 parent_id/range；不再复制一套分块源码。
+
+`file-references.jsonl` 是 occurrence → symbol → definition occurrence → file 的确定性投影。kind 固定为 `symbol-reference`，不解释为运行时依赖。按 source_project_id/source_file_id/target_file_id 汇总，避免不同解析上下文混合；target_project_ids 来自实际定义 occurrence。
+
+每条 evidence 包含 occurrence_id、symbol_id、definition_ids 和 target_status。定义位于唯一文件时标为 unique-target-file；存在多个定义文件时，各目标都保留为 candidate-target-file，包括同时存在同文件定义的情况。一个文件内有多个定义位置，不声称目标定义唯一。汇总关系的 resolution_status 区分 unique-target-files 与 contains-candidate-targets。
+
+同文件引用、无符号引用、没有快照内定义的引用不生成跨文件边，分别记入 reference_coverage。cross_file 按原始 occurrence 计数，evidence_count 按每条目标文件关系计数；多候选情况下二者不能简单相加对比。
+
+这两份文件是 v2 的可选扩展，旧 v2/v1 仍可校验。新快照必须携带两者；校验器从基础记录重算结果，拒绝哈希正确但伪造了证据或覆盖的投影。SQLite 完整保留 file-references，metadata 保存 overview，均可离线重建。

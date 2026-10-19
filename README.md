@@ -21,12 +21,14 @@ Agent 推理层以后可以使用 Codex。当前阶段的核心交付是 Code IR
 scan-*/
   code-ir/
     manifest.json             # code-ir/2、仓库版本、解析器、覆盖、计数、文件校验
+    overview.json             # 可重建的项目概览、语言统计、引用覆盖与缺口
     projects.jsonl            # 解析单元、配置继承、环境、输入文件和缺口
     files.jsonl               # 路径、语言、大小、源码指纹和 source blob 映射
     documents.jsonl           # 解析文档元数据和位置编码
     symbols.jsonl             # 符号信息，保留解析器原始字段
     occurrences.jsonl         # 定义/引用位置、enclosing range 等
     relationships.jsonl       # 解析器明确提供的符号关系
+    file-references.jsonl     # 文件间符号引用汇总，逐条保留引用和定义证据
     diagnostics.jsonl         # 解析器诊断
     external-symbols.jsonl    # 外部符号信息
     structures.jsonl          # 模块、类、函数、参数及源码包含关系
@@ -69,5 +71,7 @@ TS 配置按实际项目分别处理，未被配置覆盖的文件单独标为�
 当前保留 Python、TS/JS 的静态语义事实。Vue SFC、动态属性调用、反射和跨语言调用存在缺口。引用不自动转为调用边，不推断污点传播。诊断原样保留，不等同于安全审计结果。
 
 调用记录来自 AST；仅在调用名的源码位置与 SCIP 引用精确匹配、且目标是已定义的可调用声明时标记 `resolved-static`。它表示静态声明关联，不保证运行时分派。SQLite 可由保存的 IR 离线重建，示例见契约文档。
+
+文件间关系按源解析项目分别汇总：从符号引用追到快照中已索引的定义文件。多个定义文件保留为候选；外部或未解析目标写入覆盖缺口，不凭导入字符串推测。概览和文件关系均由底层事实生成，校验时重新计算比对。
 
 [当前 Code IR v2 契约](docs/code-ir-v2.md) · [v2 实际验收](docs/code-ir-v2-acceptance-20261019.md) · [历史 v1 契约](docs/code-ir-v1.md) · [解析器与索引说明](semantic-model/README.md)

@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { isDeepStrictEqual } from 'node:util';
 import { hash, inside } from './inventory.js';
+import { deriveFileReferences, deriveOverview } from './relations.js';
 
 function* records(directory, name) {
   const fd = fs.openSync(inside(directory, name + '.jsonl'), 'r');
@@ -37,10 +39,10 @@ export function verifyIR(directory) {
   }
   const names = ['files', 'documents', 'symbols', 'occurrences', 'relationships', 'diagnostics', 'external-symbols'];
   if (manifest.schema_version === 'code-ir/2') names.unshift('projects');
-  for (const name of ['structures', 'imports', 'calls', 'syntax-diagnostics']) if (manifest.counts[name] !== undefined) names.push(name);
+  for (const name of ['structures', 'imports', 'calls', 'syntax-diagnostics', 'file-references']) if (manifest.counts[name] !== undefined) names.push(name);
   const maps = Object.fromEntries(names.map(name => [name, new Map()]));
   const entityIds = new Set();
-  const prefixes = { projects: 'project', files: 'file', documents: 'document', symbols: 'symbol', occurrences: 'occurrence', relationships: 'relationship', diagnostics: 'diagnostic', 'external-symbols': 'external', structures: 'structure', imports: 'import', calls: 'call', 'syntax-diagnostics': 'syntax-diagnostic' };
+  const prefixes = { projects: 'project', files: 'file', documents: 'document', symbols: 'symbol', occurrences: 'occurrence', relationships: 'relationship', diagnostics: 'diagnostic', 'external-symbols': 'external', structures: 'structure', imports: 'import', calls: 'call', 'syntax-diagnostics': 'syntax-diagnostic', 'file-references': 'file-reference' };
   for (const name of names) {
     if (!artifacts.has(`${name}.jsonl`)) throw new Error(`IR dataset missing: ${name}`);
     let count = 0;
@@ -170,5 +172,16 @@ export function verifyIR(directory) {
     }
   }
   for (const diagnostic of maps['syntax-diagnostics']?.values() || []) if (need('files', diagnostic.file_id).sha256 !== diagnostic.source_sha256) throw new Error('Syntax diagnostic source mismatch');
+  if (maps['file-references']) {
+    const rows = Object.fromEntries(Object.entries(maps).map(([name, map]) => [name, [...map.values()]]));
+    const derived = deriveFileReferences(rows);
+    if (derived.references.length !== rows['file-references'].length) throw new Error('File reference projection count mismatch');
+    for (const expected of derived.references) {
+      if (!isDeepStrictEqual(maps['file-references'].get(expected.id), expected)) throw new Error('File reference evidence mismatch');
+    }
+    if (!artifacts.has('overview.json')) throw new Error('Derived overview missing');
+    const overview = JSON.parse(fs.readFileSync(inside(directory, 'overview.json'), 'utf8'));
+    if (!isDeepStrictEqual(overview, deriveOverview(rows, derived.coverage))) throw new Error('Derived overview mismatch');
+  }
   return { ...report, entity_links_verified: true, range_columns_unchecked_encoding_unspecified: unspecifiedColumns };
 }
