@@ -1,0 +1,17 @@
+{
+  "name": "code-review",
+  "version": "0.2.0",
+  "description": "Evidence-based repository exploration for Codex using local SCIP indexes.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "requires_local_executor": true,
+  "interface": {
+    "displayName": "Code Review",
+    "shortDescription": "Explore code with evidence",
+    "longDescription": "Find definitions, references and verified source context using local semantic indexes. Codex performs the analysis.",
+    "developerName": "YKASN",
+    "category": "Developer Tools",
+    "capabilities": [],
+    "defaultPrompt": "Analyze this repository using verified source evidence and explain any coverage gaps."
+  }
+}

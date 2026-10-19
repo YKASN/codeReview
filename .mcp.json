@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "code-review": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/semantic-model/src/mcp-server.js"],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}

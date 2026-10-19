@@ -1,0 +1,8 @@
+**/node_modules/
+semantic-model/output/
+artifacts/
+*.sqlite
+*.sqlite-*
+*.scip
+.env
+.env.*
