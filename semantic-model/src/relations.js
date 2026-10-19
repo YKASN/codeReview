@@ -6,7 +6,10 @@ export function deriveFileReferences(rows) {
   const occurrences = new Map(rows.occurrences.map(o => [o.id, o]));
   const definitions = new Map(rows.symbols.map(s => [s.id, (s.definition_ids || []).map(id => occurrences.get(id))]));
   const groups = new Map();
+  const symbolMap=new Map(rows.symbols.map(s=>[s.id,s]));
   const coverage = { reference_occurrences: 0, missing_symbol: 0, no_indexed_definition: 0, same_file_only: 0, cross_file: 0, ambiguous_cross_file: 0 };
+  const classified=rows.symbols.some(s=>s.origin_classification!==undefined);
+  if(classified){coverage.identified_external=0;coverage.unresolved_no_definition=0;}
   for (const reference of rows.occurrences) {
     if (reference.role === 'definition') continue;
     coverage.reference_occurrences++;
@@ -17,7 +20,7 @@ export function deriveFileReferences(rows) {
       if (!targets.has(definition.file_id)) targets.set(definition.file_id, []);
       targets.get(definition.file_id).push(definition);
     }
-    if (!targets.size) { coverage.no_indexed_definition++; continue; }
+    if (!targets.size) { coverage.no_indexed_definition++; if(classified){if(['standard-library','dependency'].includes(symbolMap.get(reference.symbol_id)?.origin_classification))coverage.identified_external++;else coverage.unresolved_no_definition++;}continue; }
     const crossFile = [...targets].filter(([file]) => file !== reference.file_id);
     if (!crossFile.length) { coverage.same_file_only++; continue; }
     coverage.cross_file++;

@@ -21,6 +21,8 @@
 | calls | id、file_id、source_sha256、parser、range、callee_range/name/expression、enclosing_structure_id、candidate_symbol_ids、binding_occurrence_ids、target_symbol_id、resolution_status、unresolved_reason |
 | syntax-diagnostics | id、file_id、source_sha256、parser、message，以及解析器提供的 code/line |
 | file-references | id、kind、source_project_id、source_file_id、target_file_id、target_project_ids、symbol_ids、evidence_count、evidence、resolution_status |
+| template-expressions | id、file_id、source_sha256、parser、position_encoding、range、kind、expression、resolution_status |
+| candidates | id、rule_id、rule_version、status、file_id、source_sha256、position_encoding、range、reason、evidence、limitations，以及适用的 structure_id/call_id/import_id |
 
 “出处字段”是 project_id、producer_id、document_id、file_id、source_sha256。manifest 的 producers 保存解析器名称、版本、原始文件和执行配置；每条事实都能关联到它。
 
@@ -70,6 +72,8 @@ TypeScript 5.9.3 编译器 API 与 Python 标准库 AST 提取模块、类、函
 
 当前未做跨语言/运行时分派、反射展开、数据流、增量合并；Vue SFC 保留源码。函数变量、部分赋值/解构、继承与重导出没有完整归一化；外部依赖仅基于已有环境。coverage 分别报告结构解析、静态绑定、未知字段和配置缺口，不能作为语义准确率。
 
+后续补充：Vue 已使用 `@vue/compiler-sfc` 3.5.38 提取 SFC 与脚本语法事实，脚本内容以保留 UTF-16 位置的遮罩交给现有 TypeScript AST。模板保存 component、directive-*、interpolation 的表达式和原文件范围；不伪造模板符号或调用目标。非 JS/TS 或外部 src 脚本块记为部分覆盖。
+
 ## 可重建的概览与文件关系
 
 `overview.json` 使用 `code-ir-overview/1`：保存各数据集计数、语言分布、各解析项目的配置依据、输入/已索引文件数、观察到的文档数、对外文件关系数和已有缺口。它不推断业务模块或职责。继续展开时，使用项目的 input_file_ids、文件的 document_ids，以及 structures 的 parent_id/range；不再复制一套分块源码。
@@ -81,3 +85,22 @@ TypeScript 5.9.3 编译器 API 与 Python 标准库 AST 提取模块、类、函
 同文件引用、无符号引用、没有快照内定义的引用不生成跨文件边，分别记入 reference_coverage。cross_file 按原始 occurrence 计数，evidence_count 按每条目标文件关系计数；多候选情况下二者不能简单相加对比。
 
 这两份文件是 v2 的可选扩展，旧 v2/v1 仍可校验。新快照必须携带两者；校验器从基础记录重算结果，拒绝哈希正确但伪造了证据或覆盖的投影。SQLite 完整保留 file-references，metadata 保存 overview，均可离线重建。
+
+## 外部身份与候选规则
+
+符号保留 SCIP 原始串，并按协议中双空格转义规则读取包头，保存 identity（scheme、manager、package_name/version、原始 descriptor）。不从 descriptor 猜测符号名称或种类。origin_classification 区分 snapshot、standard-library、dependency、snapshot-package-unindexed、unknown；标准库标识或明确的非本项目依赖包标识可以证明外部身份，不能证明运行时目标、API 存在性或调用参数正确。
+
+无源码定义的已识别外部符号仍为 external。AST 调用唯一匹配到这类符号时使用 identified-external 和 external_symbol_id，target_symbol_id 保留为空，避免混同已保存的内部定义。reference_coverage 对 no_indexed_definition 进一步拆分 identified_external/unresolved_no_definition；不将外部定义缺失当作问题候选。
+
+`rule-report.json` 固定 `code-ir-rules/1`，列出规则、命中数量和未绑定声明的覆盖缺口。候选状态只能是 candidate，所有命中均由程序计算：
+
+| 规则 | 条件与边界 |
+| --- | --- |
+| function-no-external-reference | 有 SCIP 符号绑定的具名函数/方法，没有观察到声明范围外的引用。区分完全无引用与仅声明范围内引用；回调传递也是使用，不要求存在直接调用。未绑定声明不据此判未使用。 |
+| python-simple-call-arity | 已静态绑定到唯一普通 Python 函数，且仅有普通位置形参/实参时检查数量范围。跳过装饰器、关键字参数、参数展开及复杂签名。 |
+| python-relative-import-no-source | 显式相对导入的 module 在清单中没有 Python 源文件、stub、包入口或命名空间目录。只是源码目标缺失候选，扩展模块、导入钩子和排除文件仍可能使其有效。绝对外部导入不采用此规则。 |
+| producer-diagnostic | 原样引用索引器的 Error/Warning 及其诊断 ID，不改写为已确认缺陷。 |
+
+候选保留证据 ID、来源哈希、范围、规则版本和限制。装饰器、导出 API、方法分派、Python 协议方法、测试入口、Vue 模板绑定不完整等会作为提示保留。没有引用的观察不等于可安全删除，程序不自动删除或确认垃圾代码。
+
+校验器重新运行规则并比对 candidates 与 rule-report，SQLite 原样保存候选及报告。调用检查和函数候选只使用保存的事实，不调用 LLM；后续 LLM 负责结合业务与框架约定核实候选。

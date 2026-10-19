@@ -37,6 +37,7 @@ export function rebuildSQLite(directory, filename) {
     setMetadata(db, 'code_ir', { schema_version: manifest.schema_version, directory: path.relative(path.dirname(filename), directory), projection_version: 'code-ir-sqlite/2' });
     setMetadata(db, 'runs', manifest.producers);
     if (manifest.artifacts.some(a => a.path === 'overview.json')) setMetadata(db, 'overview', JSON.parse(fs.readFileSync(path.join(directory, 'overview.json'), 'utf8')));
+    if (manifest.artifacts.some(a => a.path === 'rule-report.json')) setMetadata(db, 'rule_report', JSON.parse(fs.readFileSync(path.join(directory, 'rule-report.json'), 'utf8')));
     db.exec('COMMIT'); db.close(); closed = true;
     fs.renameSync(temporary, filename);
     return { filename, projection_version: 'code-ir-sqlite/2', records: Object.values(validation.counts).reduce((a, b) => a + b, 0), validation };

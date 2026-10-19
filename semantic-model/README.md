@@ -8,6 +8,7 @@
 - SCIP 协议固定于 `fcb3cb3c679fe2da18141550f864b9e67afab297`，许可见 `vendor/SCIP-LICENSE`。
 - protobufjs 解码原始 SCIP；`ir.js` 写出规范化 JSONL、源码 blob、解析配置/环境元数据和 manifest；`verify-ir.js` 校验内部关联；`projection.js` 仅从保存的 IR 原子重建 SQLite。
 - `relations.js` 从已有定义/引用生成带逐条证据的文件关系与项目概览；不推断业务职责，不把普通引用改写为调用，未解析与多定义目标单独记录。
+- `symbols.js` 读取 SCIP 协议包头区分已识别标准库/依赖与未知目标；`rules.js` 通过固定版本的程序规则保存候选与限制，不调用 LLM。Vue 使用官方 `@vue/compiler-sfc` 3.5.38 补充脚本与模板事实。
 
 依赖固定在 package.json 与 lockfile。Python 按组件寻找最近祖先 `.venv`，或使用指定解释器；找不到时使用空包清单并保存环境缺口，第三方包解析可能不完整。原始 SCIP 和覆盖报告一并保存，不能把文件覆盖数当成语义正确率。
 

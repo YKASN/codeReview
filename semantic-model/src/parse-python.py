@@ -120,6 +120,7 @@ for file in request["files"]:
                 result["calls"].append({"file_id": file_id, "parser": parser, "position_encoding": "UTF8CodeUnitOffsetFromLineStart", "range": span(node),
                                         "callee_range": r if name else None, "callee_name": name, "callee_expression": segment(callee),
                                         "enclosing_index": scopes[-1], "argument_count": len(node.args) + len(node.keywords)})
+                result["calls"][-1]["argument_shape"] = {"positional": len(node.args), "keywords": [k.arg for k in node.keywords if k.arg], "expansion": any(isinstance(a, ast.Starred) for a in node.args) or any(k.arg is None for k in node.keywords)}
                 self.generic_visit(node)
 
         Visitor().visit(tree)

@@ -4,6 +4,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { isDeepStrictEqual } from 'node:util';
 import { hash, inside } from './inventory.js';
 import { deriveFileReferences, deriveOverview } from './relations.js';
+import { deriveCandidates } from './rules.js';
+import { classifySymbolOrigins } from './symbols.js';
 
 function* records(directory, name) {
   const fd = fs.openSync(inside(directory, name + '.jsonl'), 'r');
@@ -39,10 +41,10 @@ export function verifyIR(directory) {
   }
   const names = ['files', 'documents', 'symbols', 'occurrences', 'relationships', 'diagnostics', 'external-symbols'];
   if (manifest.schema_version === 'code-ir/2') names.unshift('projects');
-  for (const name of ['structures', 'imports', 'calls', 'syntax-diagnostics', 'file-references']) if (manifest.counts[name] !== undefined) names.push(name);
+  for (const name of ['structures', 'imports', 'calls', 'syntax-diagnostics', 'file-references', 'template-expressions', 'candidates']) if (manifest.counts[name] !== undefined) names.push(name);
   const maps = Object.fromEntries(names.map(name => [name, new Map()]));
   const entityIds = new Set();
-  const prefixes = { projects: 'project', files: 'file', documents: 'document', symbols: 'symbol', occurrences: 'occurrence', relationships: 'relationship', diagnostics: 'diagnostic', 'external-symbols': 'external', structures: 'structure', imports: 'import', calls: 'call', 'syntax-diagnostics': 'syntax-diagnostic', 'file-references': 'file-reference' };
+  const prefixes = { projects: 'project', files: 'file', documents: 'document', symbols: 'symbol', occurrences: 'occurrence', relationships: 'relationship', diagnostics: 'diagnostic', 'external-symbols': 'external', structures: 'structure', imports: 'import', calls: 'call', 'syntax-diagnostics': 'syntax-diagnostic', 'file-references': 'file-reference', 'template-expressions':'template-expression', candidates:'candidate' };
   for (const name of names) {
     if (!artifacts.has(`${name}.jsonl`)) throw new Error(`IR dataset missing: ${name}`);
     let count = 0;
@@ -110,6 +112,7 @@ export function verifyIR(directory) {
     if (!sourceLines.has(file.id)) sourceLines.set(file.id, fs.readFileSync(inside(directory, file.source), 'utf8').split(/\r?\n/));
     const lines = sourceLines.get(file.id);
     if (range[0] >= lines.length || range[2] >= lines.length) throw new Error('Source range line out of bounds: ' + file.path);
+    if(row.range_encoding_evidence==='ascii-prefix' && range===row.range && (range[0]!==range[2] || range[3]>lines[range[0]].length || /[^\x00-\x7f]/.test(lines[range[0]].slice(0,range[3]))))throw new Error('Unproven ASCII range evidence');
     const length = encoding === 'UTF8CodeUnitOffsetFromLineStart' ? text => Buffer.byteLength(text)
       : encoding === 'UTF16CodeUnitOffsetFromLineStart' ? text => text.length
         : encoding === 'UTF32CodeUnitOffsetFromLineStart' ? text => [...text].length : null;
@@ -128,6 +131,10 @@ export function verifyIR(directory) {
       const occurrence = need('occurrences', id);
       if (occurrence.symbol_id !== symbol.id || occurrence.role !== 'definition') throw new Error('Symbol definition mismatch');
     }
+  }
+  if([...maps.symbols.values()].some(s=>s.origin_classification!==undefined)){
+    const classified=[...maps.symbols.values()].map(s=>({...s}));classifySymbolOrigins(classified);
+    for(const expected of classified){const actual=maps.symbols.get(expected.id);if(!isDeepStrictEqual(actual.identity,expected.identity)||actual.origin_classification!==expected.origin_classification)throw new Error('Symbol origin evidence mismatch');}
   }
   for (const occurrence of maps.occurrences.values()) {
     checkRange(occurrence, occurrence.range);
@@ -168,10 +175,21 @@ export function verifyIR(directory) {
       if (record.target_symbol_id) {
         const target = need('symbols', record.target_symbol_id);
         if (record.resolution_status !== 'resolved-static' || target.resolution_status !== 'defined' || !['Function', 'Method', 'Class', 'Constructor'].includes(target.kind) || record.candidate_symbol_ids.length !== 1 || !record.candidate_symbol_ids.includes(target.id) || !record.binding_occurrence_ids.length) throw new Error('Unproven static call target');
+      } else if(record.resolution_status==='identified-external') {
+        const external=need('symbols',record.external_symbol_id);
+        if(!['standard-library','dependency'].includes(external.origin_classification)||external.resolution_status!=='external'||record.candidate_symbol_ids.length!==1||record.candidate_symbol_ids[0]!==external.id||!record.binding_occurrence_ids.length||record.unresolved_reason)throw new Error('Unproven external call identity');
       } else if (record.resolution_status !== 'unresolved' || !record.unresolved_reason) throw new Error('Missing unresolved call reason');
     }
   }
   for (const diagnostic of maps['syntax-diagnostics']?.values() || []) if (need('files', diagnostic.file_id).sha256 !== diagnostic.source_sha256) throw new Error('Syntax diagnostic source mismatch');
+  for(const expression of maps['template-expressions']?.values()||[])checkRange(expression,expression.range);
+  if(maps.candidates){
+    for(const candidate of maps.candidates.values())checkRange(candidate,candidate.range);
+    const rows=Object.fromEntries(Object.entries(maps).map(([name,map])=>[name,[...map.values()]]));
+    const derived=deriveCandidates(rows);
+    if(derived.candidates.length!==rows.candidates.length||derived.candidates.some(c=>!isDeepStrictEqual(c,maps.candidates.get(c.id))))throw new Error('Rule candidate evidence mismatch');
+    if(!artifacts.has('rule-report.json')||!isDeepStrictEqual(JSON.parse(fs.readFileSync(inside(directory,'rule-report.json'),'utf8')),derived.report))throw new Error('Rule report mismatch');
+  }
   if (maps['file-references']) {
     const rows = Object.fromEntries(Object.entries(maps).map(([name, map]) => [name, [...map.values()]]));
     const derived = deriveFileReferences(rows);

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
+import { parse as parseSFC, version as vueVersion } from '@vue/compiler-sfc';
 import { hash } from './inventory.js';
 
 const id = (kind, ...parts) => kind + ':' + hash(JSON.stringify(parts));
@@ -12,8 +13,8 @@ const normalizedKinds = { module: 'Module', class: 'Class', function: 'Function'
 function typescriptFacts(directory, files) {
   const result = { structures: [], imports: [], calls: [], diagnostics: [], files: [] }, parser = 'typescript/' + ts.version;
   for (const file of files) {
-    const text = fs.readFileSync(path.join(directory, file.source), 'utf8');
-    const source = ts.createSourceFile(file.path, text, ts.ScriptTarget.Latest, true);
+    const text = file.syntax_text ?? fs.readFileSync(path.join(directory, file.source), 'utf8');
+    const source = ts.createSourceFile(file.path, text, ts.ScriptTarget.Latest, true, file.script_kind);
     const scopes = [];
     const range = node => {
       const start = source.getLineAndCharacterOfPosition(node.getStart(source));
@@ -23,10 +24,13 @@ function typescriptFacts(directory, files) {
     const add = (kind, node, name = null, nameNode = null, extra = {}) => {
       const index = result.structures.length;
       result.structures.push({ file_id: file.id, parser, position_encoding: 'UTF16CodeUnitOffsetFromLineStart', kind, name,
-        range: range(node), name_range: nameNode ? range(nameNode) : null, parent_index: scopes.at(-1) ?? null, ...extra });
+        range: range(node), name_range: nameNode ? range(nameNode) : null, parent_index: scopes.at(-1) ?? null,
+        exported: Boolean(node.modifiers?.some(m => [ts.SyntaxKind.ExportKeyword, ts.SyntaxKind.DefaultKeyword].includes(m.kind))),
+        decorators: ts.canHaveDecorators(node) ? (ts.getDecorators(node) || []).map(d => d.getText(source)) : [], ...extra });
       return index;
     };
-    const module = add('module', source, file.path); scopes.push(module);
+    const last=source.getLineAndCharacterOfPosition(source.end);
+    const module = add('module', source, file.path, null, {range:[0,0,last.line,last.character]}); scopes.push(module);
     function visit(node) {
       let structure = null;
       const nameNode = node.name && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) ? node.name : null;
@@ -69,15 +73,51 @@ function typescriptFacts(directory, files) {
   return result;
 }
 
+function vueFacts(directory, files) {
+  const result = { structures: [], imports: [], calls: [], diagnostics: [], files: [], templateExpressions: [] };
+  for (const file of files) {
+    const text = fs.readFileSync(path.join(directory, file.source), 'utf8');
+    const { descriptor, errors } = parseSFC(text, { filename: file.path });
+    const blocks = [descriptor.script, descriptor.scriptSetup].filter(Boolean), supported = blocks.filter(b => !b.src && (!b.lang || ['js','ts','jsx','tsx'].includes(b.lang)));
+    let masked = '', cursor = 0;
+    for (const block of supported.sort((a,b) => a.loc.start.offset-b.loc.start.offset)) {
+      masked += text.slice(cursor, block.loc.start.offset).replace(/[^\r\n]/g, ' ') + block.content;
+      cursor = block.loc.end.offset;
+    }
+    masked += text.slice(cursor).replace(/[^\r\n]/g, ' ');
+    const parsed = typescriptFacts(directory, [{ ...file, syntax_text: masked, script_kind: blocks.some(b => b.lang === 'tsx' || b.lang === 'jsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS }]);
+    const offset = result.structures.length;
+    result.structures.push(...parsed.structures.map(s => ({ ...s, parent_index: s.parent_index === null ? null : s.parent_index+offset })));
+    for (const name of ['imports', 'calls']) result[name].push(...parsed[name].map(r => ({ ...r, enclosing_index:r.enclosing_index+offset })));
+    result.diagnostics.push(...parsed.diagnostics);
+    for (const error of errors) result.diagnostics.push({file_id:file.id, parser:'vue-sfc/'+vueVersion, message:typeof error==='string'?error:error.message});
+    result.files.push({file_id:file.id, parser:'vue-sfc/'+vueVersion+'+typescript/'+ts.version, status:errors.length || parsed.diagnostics.length || blocks.length!==supported.length ? 'partial':'parsed', limitations:['template-symbol-bindings-not-resolved', ...(blocks.length!==supported.length?['unsupported-or-external-script-block']:[])]});
+    const record = (node, kind, expression) => result.templateExpressions.push({file_id:file.id, parser:'vue-sfc/'+vueVersion, position_encoding:'UTF16CodeUnitOffsetFromLineStart', kind, expression,
+      range:[node.loc.start.line-1,node.loc.start.column-1,node.loc.end.line-1,node.loc.end.column-1]});
+    function visit(node) {
+      if (node.type===5) record(node.content,'interpolation',node.content.content);
+      if (node.type===1) {
+        if(node.tagType===1) record(node,'component',node.tag);
+        for(const prop of node.props) if(prop.type===7 && prop.exp) record(prop.exp,'directive-'+prop.name,prop.exp.content);
+      }
+      for(const child of node.children || []) visit(child);
+    }
+    if(descriptor.template?.ast) visit(descriptor.template.ast);
+  }
+  return result;
+}
+
 export function enrichStructures(directory, rows, symbols) {
-  const facts = { structures: [], imports: [], calls: [], diagnostics: [], files: [] };
+  const facts = { structures: [], imports: [], calls: [], diagnostics: [], files: [], templateExpressions: [] };
   const merge = result => {
     const offset = facts.structures.length;
     facts.structures.push(...result.structures.map(s => ({ ...s, parent_index: s.parent_index === null ? null : s.parent_index + offset })));
     for (const dataset of ['imports', 'calls']) facts[dataset].push(...result[dataset].map(r => ({ ...r, enclosing_index: r.enclosing_index + offset })));
     facts.diagnostics.push(...result.diagnostics); facts.files.push(...result.files);
+    facts.templateExpressions.push(...(result.templateExpressions || []));
   };
   merge(typescriptFacts(directory, rows.files.filter(f => ['typescript', 'javascript'].includes(f.language))));
+  merge(vueFacts(directory, rows.files.filter(f => f.language === 'vue')));
   const pythonFiles = rows.files.filter(f => f.language === 'python');
   if (pythonFiles.length) {
     const interpreter = rows.projects.find(p => p.language === 'python' && p.environment.available)?.environment.interpreter;
@@ -90,7 +130,7 @@ export function enrichStructures(directory, rows, symbols) {
     }
   }
   const fileMap = new Map(rows.files.map(f => [f.id, f])), documentMap = new Map(rows.documents.map(d => [d.id, d]));
-  const lines = new Map(rows.files.filter(f => ['python', 'typescript', 'javascript'].includes(f.language)).map(f => [f.id, fs.readFileSync(path.join(directory, f.source), 'utf8').split(/\r?\n/)]));
+  const lines = new Map(rows.files.filter(f => ['python', 'typescript', 'javascript', 'vue'].includes(f.language)).map(f => [f.id, fs.readFileSync(path.join(directory, f.source), 'utf8').split(/\r?\n/)]));
   function anchor(file, range, encoding) {
     if (!range || range[0] !== range[2]) return null;
     const text = lines.get(file)?.[range[0]];
@@ -104,6 +144,7 @@ export function enrichStructures(directory, rows, symbols) {
   const definitions = new Map(), references = new Map(), bindings = new Map();
   for (const occurrence of rows.occurrences) {
     const key = anchor(occurrence.file_id, occurrence.range, documentMap.get(occurrence.document_id).position_encoding);
+    if(key && (!occurrence.position_encoding || occurrence.position_encoding==='UnspecifiedPositionEncoding')) occurrence.range_encoding_evidence='ascii-prefix';
     if (!key || !occurrence.symbol_id) continue;
     const map = occurrence.role === 'definition' ? definitions : references;
     if (!map.has(key)) map.set(key, new Set()); map.get(key).add(occurrence.symbol_id);
@@ -135,14 +176,17 @@ export function enrichStructures(directory, rows, symbols) {
     const candidates = references.get(key);
     const ids = [...(candidates || [])], candidate = ids.length === 1 ? symbols.get(ids[0]) : null;
     const linked = candidate && knownCallable.has(candidate.kind) && candidate.resolution_status === 'defined';
+    const external = candidate && ['standard-library', 'dependency'].includes(candidate.origin_classification);
     return { id: id('call', record.file_id, ordinal), ...rest, ...locate(record), candidate_symbol_ids: ids,
       binding_occurrence_ids: bindings.get(key) || [], resolution_evidence: ids.length ? 'syntax-callee-range+producer-occurrence' : null,
-      target_symbol_id: linked ? candidate.id : null, resolution_status: linked ? 'resolved-static' : 'unresolved',
-      unresolved_reason: linked ? null : !record.callee_range ? 'dynamic-callee-expression' : ids.length > 1 ? 'ambiguous-producer-binding' : ids.length === 1 ? 'callable-definition-not-established' : 'no-compatible-producer-binding' };
+      target_symbol_id: linked ? candidate.id : null, external_symbol_id: external ? candidate.id : null, resolution_status: linked ? 'resolved-static' : external ? 'identified-external' : 'unresolved',
+      unresolved_reason: linked || external ? null : !record.callee_range ? 'dynamic-callee-expression' : ids.length > 1 ? 'ambiguous-producer-binding' : ids.length === 1 ? 'callable-definition-not-established' : 'no-compatible-producer-binding' };
   });
   rows['syntax-diagnostics'] = facts.diagnostics.map((record, ordinal) => ({ id: id('syntax-diagnostic', record.file_id, ordinal), ...record, source_sha256: fileMap.get(record.file_id).sha256 }));
+  rows['template-expressions'] = facts.templateExpressions.map((record, ordinal) => ({id:id('template-expression',record.file_id,ordinal),...record,source_sha256:fileMap.get(record.file_id).sha256,resolution_status:'syntax-only'}));
   for (const file of rows.files) file.structure_result = facts.files.find(f => f.file_id === file.id) || { file_id: file.id, parser: null, status: 'source-only' };
   return { parsed_files: facts.files.filter(f => f.status === 'parsed').length, failed_files: facts.files.filter(f => f.status !== 'parsed').length,
     structures: rows.structures.length, imports: rows.imports.length, calls: rows.calls.length, resolved_static_calls: rows.calls.filter(c => c.resolution_status === 'resolved-static').length,
-    unresolved_calls: rows.calls.filter(c => c.resolution_status === 'unresolved').length, syntax_diagnostics: rows['syntax-diagnostics'].length };
+    identified_external_calls: rows.calls.filter(c => c.resolution_status === 'identified-external').length,
+    unresolved_calls: rows.calls.filter(c => c.resolution_status === 'unresolved').length, template_expressions:rows['template-expressions'].length, syntax_diagnostics: rows['syntax-diagnostics'].length };
 }

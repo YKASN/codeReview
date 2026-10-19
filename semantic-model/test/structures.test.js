@@ -11,7 +11,7 @@ function fixture(t, sources, occurrences = []) {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const files = Object.entries(sources).map(([name, source], index) => {
     fs.writeFileSync(path.join(directory, name), source);
-    return { id: 'file:' + index, path: name, source: name, sha256: hash(Buffer.from(source)), language: name.endsWith('.py') ? 'python' : 'typescript' };
+    return { id: 'file:' + index, path: name, source: name, sha256: hash(Buffer.from(source)), language: name.endsWith('.py') ? 'python' : name.endsWith('.vue') ? 'vue' : 'typescript' };
   });
   const rows = { files, projects: [], documents: [{ id: 'document:0', position_encoding: 'UnspecifiedPositionEncoding' }], occurrences };
   const symbols = new Map([['symbol:work', { id: 'symbol:work', name: null, kind: 'unknown', resolution_status: 'defined' }]]);
@@ -66,4 +66,18 @@ test('accessor declarations are not treated as directly callable methods', t => 
   assert.equal(symbols.get('symbol:work').kind, 'GetAccessor');
   assert.equal(rows.calls[0].target_symbol_id, null);
   assert.equal(rows.calls[0].unresolved_reason, 'callable-definition-not-established');
+});
+
+test('Vue scripts preserve original ranges and template directives remain syntax facts',t=>{
+  const {rows}=fixture(t,{'App.vue':'<script setup lang="ts">\nimport {run} from "./tool";\nfunction unused() {}\nrun();\n</script>\n<template><Widget @click="unused">{{ value }}</Widget></template>'});
+  assert.equal(rows.files[0].structure_result.status,'parsed');
+  assert.equal(rows.calls[0].range[0],3);assert.equal(rows.calls[0].resolution_status,'unresolved');
+  assert.ok(rows.structures.some(s=>s.name==='unused'&&s.range[0]===2));
+  assert.ok(rows['template-expressions'].some(e=>e.kind==='directive-on'&&e.expression==='unused'&&e.range[0]===5));
+  assert.ok(rows['template-expressions'].some(e=>e.kind==='component'&&e.expression==='Widget'));
+});
+
+test('malformed Vue files retain diagnostics rather than pretending full coverage',t=>{
+  const {rows}=fixture(t,{'Broken.vue':'<script setup>function broken(</script><template><div></template>'});
+  assert.equal(rows.files[0].structure_result.status,'partial');assert.ok(rows['syntax-diagnostics'].length);
 });

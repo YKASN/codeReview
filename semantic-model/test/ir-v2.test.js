@@ -98,6 +98,12 @@ test('derived overview cannot claim coverage absent from the underlying facts', 
   assert.throws(() => verifyIR(ir.directory), /Derived overview mismatch/);
 });
 
+test('rule candidates cannot be injected as confirmed defects even with valid artifact checksums',t=>{
+  const {ir}=fixture(t),file=rows(ir.directory,'files')[0];
+  mutate(ir.directory,'candidates',values=>values.push({id:'candidate:forged',file_id:file.id,source_sha256:file.sha256,range:[0,0,0,3],position_encoding:'UTF8CodeUnitOffsetFromLineStart',status:'confirmed',rule_id:'invented'}));
+  assert.throws(()=>verifyIR(ir.directory),/Rule candidate evidence mismatch/);
+});
+
 test('IR consistency checks source provenance and out-of-bounds line ranges', t => {
   const { ir } = fixture(t);
   mutate(ir.directory, 'occurrences', values => { values[1].range = [999, 0, 999, 1]; });

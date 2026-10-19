@@ -6,7 +6,12 @@ snapshots, schema versions, provenance and coverage reports.
 
 Codex may later provide the Agent/reasoning layer. This does not make the entire
 project a Codex plugin. Do not add MCP tools, plugin manifests, agent workflows,
-question-answering interfaces or analysis features during this stage.
+question-answering interfaces or LLM interpretation during this stage.
+The user authorizes deterministic, versioned candidate rules over parser facts
+(for example unobserved references, simple call arity, and missing local source
+targets). Persist candidates with evidence and limitations; never label them
+confirmed defects or delete code automatically. Scope language support to the
+AI-QA-Assistant stack: Python, TS/JS and Vue scripts/templates; no Java/Rust work.
 
 - Preserve raw SCIP alongside normalized IR; do not invent call/dataflow edges.
 - Persist enough source and location information to interpret a snapshot after

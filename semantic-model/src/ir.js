@@ -6,10 +6,12 @@ import { hash, inside } from './inventory.js';
 import { discoverProjects } from './projects.js';
 import { enrichStructures } from './structures.js';
 import { deriveFileReferences, deriveOverview } from './relations.js';
+import { classifySymbolOrigins } from './symbols.js';
+import { deriveCandidates } from './rules.js';
 export { verifyIR } from './verify-ir.js';
 
 export const IR_VERSION = 'code-ir/2';
-export const IR_DATASETS = ['projects', 'files', 'documents', 'symbols', 'occurrences', 'relationships', 'diagnostics', 'external-symbols', 'structures', 'imports', 'calls', 'syntax-diagnostics', 'file-references'];
+export const IR_DATASETS = ['projects', 'files', 'documents', 'symbols', 'occurrences', 'relationships', 'diagnostics', 'external-symbols', 'structures', 'imports', 'calls', 'syntax-diagnostics', 'file-references', 'template-expressions', 'candidates'];
 export const entityId = (kind, ...identity) => kind + ':' + hash(JSON.stringify(identity));
 const scopedId = (raw, project, file) => raw.startsWith('local ') ? entityId('symbol', project, file, raw) : entityId('symbol', raw);
 const knownEncoding = value => value && value !== 'UnspecifiedPositionEncoding' ? value : 'UnspecifiedPositionEncoding';
@@ -143,11 +145,14 @@ export function persistIR(runDir, snapshot, runs, catalog = discoverProjects(sna
       : file.parse_results.some(r => r.status === 'failed') ? 'failed' : 'not-indexed';
     file.analysis_reason = !file.project_ids.length ? 'language-not-supported' : null;
   }
-  for (const relation of rows.relationships) relation.resolution_status = symbols.get(relation.target_symbol_id).resolution_status;
   rows.files = [...fileMap.values()]; rows.projects = projects; rows.symbols = [...symbols.values()];
+  classifySymbolOrigins(rows.symbols);
+  for (const relation of rows.relationships) relation.resolution_status = symbols.get(relation.target_symbol_id).resolution_status;
   const structureCoverage = enrichStructures(directory, rows, symbols);
   const fileRelations = deriveFileReferences(rows);
   rows['file-references'] = fileRelations.references;
+  const ruleResults = deriveCandidates(rows); rows.candidates = ruleResults.candidates;
+  fs.writeFileSync(path.join(directory, 'rule-report.json'), JSON.stringify(ruleResults.report,null,2)); artifact('rule-report.json');
   const counts = {};
   for (const name of IR_DATASETS) {
     const filename = `${name}.jsonl`, fd = fs.openSync(path.join(directory, filename), 'wx');
@@ -159,7 +164,7 @@ export function persistIR(runDir, snapshot, runs, catalog = discoverProjects(sna
   const manifest = { schema_version: IR_VERSION, state: 'pending-validation', created_at: new Date().toISOString(),
     snapshot: { id: entityId('snapshot', snapshot.commit, snapshot.fingerprint), root: snapshot.root, commit: snapshot.commit, dirty: snapshot.dirty, fingerprint: snapshot.fingerprint },
     project_configuration_fingerprint: hash(JSON.stringify(catalog)),
-    coverage: { ...structureCoverage, file_reference_relations: rows['file-references'].length, reference_coverage: fileRelations.coverage, inventoried_files: rows.files.length, indexed_files: rows.files.filter(f => f.document_ids.length).length,
+    coverage: { ...structureCoverage, rule_candidates:rows.candidates.length, file_reference_relations: rows['file-references'].length, reference_coverage: fileRelations.coverage, inventoried_files: rows.files.length, indexed_files: rows.files.filter(f => f.document_ids.length).length,
       indexed_documents: rows.documents.length, excluded_files: snapshot.skipped.length,
       configuration_gaps: projects.filter(p => p.kind === 'inferred' || p.configuration.diagnostics?.length).map(p => p.id),
       unresolved_symbols: rows.symbols.filter(s => s.resolution_status === 'unresolved').length,
